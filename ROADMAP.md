@@ -2,7 +2,17 @@
 
 ## Where We Are
 
-Gates 0–24 are complete. We have:
+Gates 0–24 are complete. We have transitioned from the **Discovery Phase** (empirical probing) to the **Maturation Phase** (API stability and architectural scaling).
+
+### Status Summary
+- **Proven Performance:** 1.55× faster than Accelerate for full MNIST MLPs; 5.1× for 16×16 tiles.
+- **Architectural Milestone:** Successfully implemented monolithic kernel fusion and zero-transpose vertical stores.
+- **Codebase Maturation (Active):**
+    - `main.rs` refactored to remove ~1500 lines of historical discovery bloat.
+    - Identification of obsolete research code in `crucible.rs`, `inference.rs`, and `probe.rs` for trimming.
+    - Deprecation of systematic discovery tools (`sink.rs`) as focus shifts to model primitives.
+
+### Functional Progress
 - A working JIT harness (MAP_JIT, fork isolation, GPR snapshots)
 - Proof that M4 uses ARM SME (not AMX)
 - A 16×16 SGEMM kernel (PTRUE → ZERO ZA → [LD1W×2 + FMOPA + ADD×2]×K → [ST1W + ADD×2]×16)
@@ -392,14 +402,64 @@ let mut mlp = SmeMlp::new(784, &[
 mlp.run(&input_col_major, &mut output);
 ```
 
-## Gate 25: Blog Post & CI (Future)
+## Phase 2: Edge & Sequence Horizons (Gates 26–32)
 
-**Goal**: Write-up and infrastructure.
+With the foundational 16-multiple MLPs proven, the next phase targets arbitrary matrix sizes, multi-core scaling, and sequence model primitives (Transformers, RNNs, SSMs).
 
-**Deliverables**:
-1. Blog post: "Beating Accelerate.framework on M4: A JIT SME Adventure"
-2. GitHub Actions CI (build-only, M4 hardware not available in CI)
-3. Architecture diagrams for documentation
+### Gate 26: Predicated Memory & Generation (Complete)
+**Goal:** Emit SVE `WHILELT` instructions to generate dynamic predicate masks for edge bounds, and ensure `LD1W`/`ST1W` respect these masks.
+**Status:** ✅ **Complete.**
+
+**Results:**
+- 20/20 elements copied correctly via predicated `LD1W` → `ST1W` loop.
+- 12/12 guard elements at indices 20–31 remained untouched.
+- `WHILELT` correctly generates lane masks for the 4-element tail (lanes 0–3 active on second iteration, lanes 4–15 inactive).
+
+**Root cause of obstacle (resolved):** The `encode_sve_whilelt_s` encoder had two bugs:
+1. **Wrong base**: `0x2590_0010` was missing bit 21 (fixed=1) and bit 12 (sf=64-bit), and incorrectly set bit 4 (eq=1). Correct base is `0x25a0_1400`.
+2. **Wrong Rm shift**: Rm was placed at bits [15:11] (`<<11`) instead of the correct bits [20:16] (`<<16`).
+
+The garbage encoding (`0x2591_107x`) decoded as undefined SVE, executed silently as a NOP on M4 — no SIGILL, no flag update, P0 remained zero, all LD1W/ST1W became no-ops under the all-false predicate. Diagnosed by cross-referencing against clang's authoritative disassembly. Pinned with a unit test covering three known reference values.
+
+**M4 SVE discoveries:**
+- `WHILELT Pd.S, Xn, Xm` (64-bit signed, .S) → `0x25a0_1400 | (Rm<<16) | (Rn<<5) | Pd` — confirmed via clang on M4.
+- Undefined SVE encodings execute silently as NOPs on M4 (no SIGILL) — masking bugs that would fault-fast on stricter hardware.
+- `LD1W`/`ST1W` with a fully-zero predicate are clean no-ops (no fault, no transfer).
+
+### Gate 27: Predicated Outer Products
+**Goal:** Handle the K-loop tail by emitting `FMOPA` with properly masked predicate registers to zero out inactive MAC units.
+**Success:** Compute a dot-product of odd length exactly matching scalar reference.
+
+### Gate 28: Arbitrary Tiled GEMM
+**Goal:** Integrate Gates 26 and 27 into the main `SmeGemm` tiled architecture.
+**Success:** `max_diff = 0.0` vs Accelerate for arbitrary M×N×K (e.g., 17×43×91) without physical memory padding.
+
+### Gate 29: Multi-threading & P-Core Pinning
+**Goal:** Dispatch large GEMMs across multiple P-cores to surpass Accelerate at ≥64×64.
+**Success:** Multi-threaded JIT beats Accelerate at 128×128.
+
+### Gate 30: Tiny-Transformer Primitives
+**Goal:** Implement SVE-based Softmax approximation and LayerNorm/RMSNorm (horizontal reductions).
+**Success:** Execute a single Self-Attention block ($Q K^T V$) natively inside the JIT.
+
+### Gate 31: RNN / GEMV Specialized Kernel
+**Goal:** Optimize a pure Matrix-Vector ($M \times 1$) kernel for sequence state updates without wasting ZA tiles.
+**Success:** 10× speedup over framework dispatch for a batch-size=1 recurrent state update.
+
+### Gate 32: SSM / Mamba Primitives
+**Goal:** Emit 1D causal convolutions (`EXT` sliding windows) and hardware-aware associative parallel scans.
+**Success:** JIT-compiled execution of a minimal Mamba block.
+
+## Codebase Cleanup (Ongoing)
+
+As the project matures, we are trimming research-phase artifacts to focus on performance:
+- [x] Refactor `main.rs` into a lean research dispatcher (now consumes lib crate, zero unused-item warnings).
+- [x] Trim `crucible.rs` — reduced to pure Accelerate FFI bindings (38 lines); `Crucible` struct and helper methods removed.
+- [x] Delete `inference.rs` — all three engine types (`MonolithicInferenceEngine`, `TiledInferenceEngine`, reference path) had zero callers; `api.rs` uses `emitter` directly.
+- [x] Trim `probe.rs` — systematic brute-force discovery removed; fork-isolation harness retained for benchmarks.
+- [x] Remove `sink.rs` — JSONL sweep logger deleted entirely.
+- [x] Trim `emitter.rs` — removed `build_sme_bfmopa_16x16`, `build_sme_smopa_16x16`, `build_sme_sgemm_page_cached`, and all dead encoders (BFMOPA/SMOPA/UMOPA/SUMOPA, MOVA, LDP_X). Net: −250 lines.
+- [x] Delete `weights.rs` — only `inference.rs` consumed it; both removed together.
 
 ## Deferred (from original roadmap)
 

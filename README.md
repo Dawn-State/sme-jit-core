@@ -95,6 +95,7 @@ These parameters were discovered through empirical instruction probing — not f
 | 22 | **Tiled inference — 784→48→48→10 MLP, 1.13× vs Accelerate** | ✅ |
 | 23 | **Monolithic fused kernel — 1.55× vs Accelerate, 3.0 μs/batch** | ✅ |
 | 24 | **Clean public API** — `SmeGemm`, `SmeMlp`, `SmeError`, Criterion benchmarks | ✅ |
+| 26 | **SVE WHILELT predicated memory** — 20-element copy, 4-element tail, zero guard violations | ✅ |
 
 See [ROADMAP.md](ROADMAP.md) for detailed findings and architecture notes.
 

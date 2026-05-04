@@ -29,8 +29,10 @@ heist_output.txt
 /.github
 /planning
 /ARCHITECTURE.md
+/FOREST.md
 
 # IDE
 .idea/
 *.swp
 *~
+MANUSCRIPT.md

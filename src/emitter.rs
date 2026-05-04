@@ -60,15 +60,6 @@ const fn encode_stp_x(rt: u8, rt2: u8, rn: u8, offset: i16) -> u32 {
     0xA900_0000 | (imm7 << 15) | ((rt2 as u32) << 10) | ((rn as u32) << 5) | (rt as u32)
 }
 
-/// Encode `LDP Xt1, Xt2, [Xn, #imm7*8]` (64-bit, offset variant).
-#[allow(dead_code)]
-const fn encode_ldp_x(rt: u8, rt2: u8, rn: u8, offset: i16) -> u32 {
-    assert!(offset % 8 == 0, "LDP offset must be multiple of 8");
-    assert!(offset >= -512 && offset <= 504, "LDP offset out of range");
-    let imm7 = ((offset / 8) as u32) & 0x7F;
-    0xA940_0000 | (imm7 << 15) | ((rt2 as u32) << 10) | ((rn as u32) << 5) | (rt as u32)
-}
-
 // ── Immediate loading ────────────────────────────────────────────────────────
 
 /// Encode `MOVZ Xd, #imm16, LSL #shift` — move wide immediate, zeroing.
@@ -232,6 +223,27 @@ pub fn encode_b_ne(offset_bytes: i32) -> u32 {
     0x5400_0001 | ((imm19 & 0x7FFFF) << 5)
 }
 
+/// `WHILELT Pd.S, Xn, Xm` — SVE generate predicate while less than (64-bit, signed).
+///
+/// ARM SVE WHILELT (predicate-as-counter) encoding:
+/// bits [31:24] = 0010_0101 (SVE prefix)
+/// bits [23:22] = 10 (size = .S)
+/// bit  [21]    = 1 (fixed)
+/// bits [20:16] = Rm
+/// bits [15:13] = 000
+/// bit  [12]    = sf = 1 (64-bit Xn/Xm)
+/// bit  [11]    = U = 0 (signed)
+/// bit  [10]    = lt = 1
+/// bits [9:5]   = Rn
+/// bit  [4]     = eq = 0 (LT, not LE)
+/// bits [3:0]   = Pd
+///
+/// Verified against clang: `whilelt p0.s, x3, x2` → `0x25a2_1460`.
+pub const fn encode_sve_whilelt_s(pd: u8, rn: u8, rm: u8) -> u32 {
+    assert!(pd <= 7 && rn <= 31 && rm <= 31);
+    0x25a0_1400 | ((rm as u32) << 16) | ((rn as u32) << 5) | (pd as u32)
+}
+
 // ── Activation Enums ─────────────────────────────────────────────────────────
 
 /// Activation function selection for fused GEMM kernels.
@@ -247,67 +259,7 @@ pub enum Activation {
     BiasReLU,
 }
 
-// ── Extended Outer Product Encoders (SME1) ───────────────────────────────────
-
-/// `BFMOPA ZA[za], Pn/M, Pm/M, Zn.H, Zm.H` — BF16 floating-point outer product and accumulate.
-///
-/// Encoding: `1 0 0 0 0 0 0 1 1 0 0 Rm(5) Pm(3) Pn(3) Rn(5) 0 ZA(3)` → `0x8180_0000` base
-pub const fn encode_bfmopa(za: u8, pn: u8, pm: u8, zn: u8, zm: u8) -> u32 {
-    assert!(za <= 7 && pn <= 7 && pm <= 7 && zn <= 31 && zm <= 31);
-    0x8180_0000 | ((zm as u32) << 16) | ((pm as u32) << 13) | ((pn as u32) << 10) | ((zn as u32) << 5) | (za as u32)
-}
-
-/// `BFMOPS ZA[za], Pn/M, Pm/M, Zn.H, Zm.H` — BF16 floating-point outer product and subtract.
-pub const fn encode_bfmops(za: u8, pn: u8, pm: u8, zn: u8, zm: u8) -> u32 {
-    encode_bfmopa(za, pn, pm, zn, zm) | 0x0000_0010
-}
-
-/// `SMOPA ZA[za], Pn/M, Pm/M, Zn.B, Zm.B` — Signed integer outer product and accumulate.
-///
-/// Encoding: `1 0 1 0 0 0 0 0 1 0 0 Rm(5) Pm(3) Pn(3) Rn(5) 0 ZA(3)` → `0xA080_0000` base
-pub const fn encode_smopa(za: u8, pn: u8, pm: u8, zn: u8, zm: u8) -> u32 {
-    assert!(za <= 7 && pn <= 7 && pm <= 7 && zn <= 31 && zm <= 31);
-    0xA080_0000 | ((zm as u32) << 16) | ((pm as u32) << 13) | ((pn as u32) << 10) | ((zn as u32) << 5) | (za as u32)
-}
-
-/// `UMOPA ZA[za], Pn/M, Pm/M, Zn.B, Zm.B` — Unsigned integer outer product and accumulate.
-///
-/// Encoding: `1 0 1 0 0 0 0 1 1 0 0 Rm(5) Pm(3) Pn(3) Rn(5) 0 ZA(3)` → `0xA180_0000` base
-pub const fn encode_umopa(za: u8, pn: u8, pm: u8, zn: u8, zm: u8) -> u32 {
-    assert!(za <= 7 && pn <= 7 && pm <= 7 && zn <= 31 && zm <= 31);
-    0xA180_0000 | ((zm as u32) << 16) | ((pm as u32) << 13) | ((pn as u32) << 10) | ((zn as u32) << 5) | (za as u32)
-}
-
-/// `SUMOPA ZA[za], Pn/M, Pm/M, Zn.B, Zm.B` — Mixed-sign (S×U) integer outer product and accumulate.
-///
-/// Encoding: `1 0 1 0 0 0 0 0 1 0 1 Rm(5) Pm(3) Pn(3) Rn(5) 0 ZA(3)` → `0xA0A0_0000` base
-pub const fn encode_sumopa(za: u8, pn: u8, pm: u8, zn: u8, zm: u8) -> u32 {
-    assert!(za <= 7 && pn <= 7 && pm <= 7 && zn <= 31 && zm <= 31);
-    0xA0A0_0000 | ((zm as u32) << 16) | ((pm as u32) << 13) | ((pn as u32) << 10) | ((zn as u32) << 5) | (za as u32)
-}
-
 // ── Activation-related SVE/SME Encoders ──────────────────────────────────────
-
-/// `MOVA Zd.S, Pg/M, ZA0H.S[Wv, #off]` — Move horizontal ZA slice to Z register.
-///
-/// Encoding: `11000000 01 0 Pg(3) Wv(3) 00 off(2) Zd(5)`? No, checking ARM:
-/// SME MOVA (SVE to ZA horizontal) is 0xC0000000.
-/// SME MOVA (ZA to SVE horizontal) is 0xC0400000.
-/// Bits: [31:22]=1100000001, [21:20]=00 (fixed), [19:16]=Pg, [15:13]=Wv, [12:5]=0, [4:0]=Zd
-/// Wait, Pg for MOVA is 3 bits in some variants.
-/// Let's use the explicit bits from a known source:
-/// 11000000 01 0 Pg(3) Wv(3) 00000 Zd(5)
-pub const fn encode_mova_z_za_h(zd: u8, pg: u8, wv: u8, off: u8) -> u32 {
-    assert!(zd <= 31 && pg <= 7 && wv <= 3 && off <= 3);
-    // off is usually part of the Wv selection in the assembly but encoded in bits 1:2 of something?
-    // Actually, SME MOVA (ZA to SVE) horizontal:
-    // 11000000 01 0 Pg(3) Wv(2) 0 off(2) 000 Zd(5)  <-- let's try this
-    0xC040_0000
-        | ((pg as u32) << 13)
-        | ((wv as u32) << 10)
-        | ((off as u32) << 8)
-        | (zd as u32)
-}
 
 /// `FMAX Zdn.S, Pg/M, Zdn.S, #0.0` — Floating-point maximum with zero (ReLU).
 ///
@@ -477,90 +429,6 @@ pub fn build_sme_sgemm_16x16(k: usize, act: Activation) -> Vec<u32> {
     block
 }
 
-/// Build a complete SME BFMOPA kernel for M=N=16 (one ZA0 tile), K iterations.
-///
-/// X4 = A (BF16), X5 = B (BF16), X2 = C (FP32)
-pub fn build_sme_bfmopa_16x16(k: usize) -> Vec<u32> {
-    const PTRUE_P0_H: u32 = 0x2558_E3E0;
-    const PTRUE_P1_H: u32 = 0x2558_E3E1;
-    const PTRUE_P0_S: u32 = 0x2598_E3E0; // For ST1W governing
-    const SVL_BYTES: u16 = 64;
-    const TILE_ROWS: usize = 16;
-
-    let ld1h_z0_x4 = encode_sve_ld1h_ss(0, 0, 4, 3);
-    let ld1h_z1_x5 = encode_sve_ld1h_ss(1, 0, 5, 3);
-    let bfmopa_za0 = encode_bfmopa(0, 0, 0, 0, 1);
-    let add_x4_svl = encode_add_x_imm(4, 4, SVL_BYTES);
-    let add_x5_svl = encode_add_x_imm(5, 5, SVL_BYTES);
-    let st1w_za0   = encode_sme_st1w_za_h(0, 0, 0, 2, 3);
-    let add_w12_1  = encode_add_w_imm(12, 12, 1);
-    let add_x2_svl = encode_add_x_imm(2, 2, SVL_BYTES);
-
-    let mut block = Vec::with_capacity(4 + 5 * k + 3 * TILE_ROWS);
-    block.push(PTRUE_P0_H);
-    block.push(PTRUE_P1_H);
-    block.push(PTRUE_P0_S);
-    block.push(ZERO_ZA);
-
-    for _ in 0..k {
-        block.push(ld1h_z0_x4);
-        block.push(ld1h_z1_x5);
-        block.push(bfmopa_za0);
-        block.push(add_x4_svl);
-        block.push(add_x5_svl);
-    }
-
-    for _ in 0..TILE_ROWS {
-        block.push(st1w_za0);
-        block.push(add_w12_1);
-        block.push(add_x2_svl);
-    }
-
-    block
-}
-
-/// Build a complete SME SMOPA kernel for M=N=16 (one ZA0 tile), K iterations.
-///
-/// X4 = A (INT8), X5 = B (INT8), X2 = C (INT32)
-pub fn build_sme_smopa_16x16(k: usize) -> Vec<u32> {
-    const PTRUE_P0_B: u32 = 0x2518_E3E0;
-    const PTRUE_P1_B: u32 = 0x2518_E3E1;
-    const PTRUE_P0_S: u32 = 0x2598_E3E0; // For ST1W governing
-    const SVL_BYTES: u16 = 64;
-    const TILE_ROWS: usize = 16;
-
-    let ld1b_z0_x4 = encode_sve_ld1b_ss(0, 0, 4, 3);
-    let ld1b_z1_x5 = encode_sve_ld1b_ss(1, 0, 5, 3);
-    let smopa_za0  = encode_smopa(0, 0, 0, 0, 1);
-    let add_x4_svl = encode_add_x_imm(4, 4, SVL_BYTES);
-    let add_x5_svl = encode_add_x_imm(5, 5, SVL_BYTES);
-    let st1w_za0   = encode_sme_st1w_za_h(0, 0, 0, 2, 3);
-    let add_w12_1  = encode_add_w_imm(12, 12, 1);
-    let add_x2_svl = encode_add_x_imm(2, 2, SVL_BYTES);
-
-    let mut block = Vec::with_capacity(4 + 5 * k + 3 * TILE_ROWS);
-    block.push(PTRUE_P0_B);
-    block.push(PTRUE_P1_B);
-    block.push(PTRUE_P0_S);
-    block.push(ZERO_ZA);
-
-    for _ in 0..k {
-        block.push(ld1b_z0_x4);
-        block.push(ld1b_z1_x5);
-        block.push(smopa_za0);
-        block.push(add_x4_svl);
-        block.push(add_x5_svl);
-    }
-
-    for _ in 0..TILE_ROWS {
-        block.push(st1w_za0);
-        block.push(add_w12_1);
-        block.push(add_x2_svl);
-    }
-
-    block
-}
-
 /// Build a self-contained JIT page for the SME SGEMM kernel.
 ///
 /// The page includes pointer-loading preamble (MOVZ/MOVK), SMSTART,
@@ -583,69 +451,6 @@ pub fn build_sme_sgemm_page(
     insns.extend(emit_load_imm64_vec(5, b_ptr));    // X5 = B
     insns.push(encode_mov_xzr(12));                  // X12 = 0
     
-    if act == Activation::Bias || act == Activation::BiasReLU {
-        insns.extend(emit_load_imm64_vec(6, bias_ptr)); // X6 = Bias
-    }
-
-    insns.push(SMSTART);
-    insns.extend_from_slice(&kernel);
-    insns.push(SMSTOP);
-    insns.push(RET);
-
-    let total_bytes = insns.len() * 4;
-    let page_size = ((total_bytes + 16383) / 16384) * 16384;
-
-    let page = crate::jit_page::JitPage::alloc(page_size).ok()?;
-    page.make_writable();
-
-    let mut off = 0;
-    for &op in &insns {
-        page.write_instruction(off, op);
-        off += 4;
-    }
-
-    page.make_executable();
-    Some(page)
-}
-
-/// Build a **cached** JIT page for the SME SGEMM kernel.
-///
-/// Unlike `build_sme_sgemm_page`, this version takes A (input) and C (output)
-/// pointers at **call time** via X0 and X1 (AArch64 calling convention).
-/// Immutable pointers (B weights, bias) are baked into the instruction stream.
-///
-/// This means the page can be built once and called repeatedly with different
-/// input/output buffers — no mmap/munmap per inference call.
-///
-/// Calling convention:
-/// - `X0` = A pointer (input, column-major for FMOPA)
-/// - `X1` = C pointer (output, row-major)
-///
-/// Baked into the page:
-/// - `X5` = B pointer (weights, row-major)
-/// - `X6` = Bias pointer (if activation uses bias)
-///
-/// The page moves X0→X4 (A) and X1→X2 (C), then runs the same kernel.
-pub fn build_sme_sgemm_page_cached(
-    k: usize,
-    act: Activation,
-    b_ptr: u64,
-    bias_ptr: u64,
-) -> Option<crate::jit_page::JitPage> {
-    let kernel = build_sme_sgemm_16x16(k, act);
-
-    let mut insns = Vec::with_capacity(20 + kernel.len() + 3);
-    
-    // Move call arguments into kernel registers:
-    // MOV X4, X0  (A input)
-    // MOV X2, X1  (C output)
-    insns.push(encode_mov_x(4, 0));  // X4 = X0 (A)
-    insns.push(encode_mov_x(2, 1));  // X2 = X1 (C)
-    insns.push(encode_mov_xzr(3));   // X3 = 0
-    insns.push(encode_mov_xzr(12));  // X12 = 0
-    
-    // Bake immutable pointers
-    insns.extend(emit_load_imm64_vec(5, b_ptr));    // X5 = B (weights)
     if act == Activation::Bias || act == Activation::BiasReLU {
         insns.extend(emit_load_imm64_vec(6, bias_ptr)); // X6 = Bias
     }
@@ -1529,6 +1334,90 @@ pub fn build_monolithic_inference_page(
     Some(page)
 }
 
+/// Build a predicated array copy kernel (Gate 26).
+///
+/// Logic:
+/// 1. Initialize X3 = 0 (index)
+/// 2. WHILELT P0.S, X3, X2 (generate predicate for index X3 vs limit X2)
+/// 3. LD1W Z0.S, P0/Z, [X0, X3, LSL #2]
+/// 4. ST1W Z0.S, P0, [X1, X3, LSL #2]
+/// 5. ADD X3, X3, #16 (next vector chunk)
+/// 6. WHILELT P0.S, X3, X2
+/// 7. B.ANY loop (if any lanes are active)
+///
+/// Actually, the standard SVE loop pattern is:
+///   WHILELT P0.S, X3, X2
+///   B.NONE end
+/// loop:
+///   LD1W ...
+///   ST1W ...
+///   ADD X3, X3, #16
+///   WHILELT P0.S, X3, X2
+///   B.ANY loop
+/// end:
+///   RET
+pub fn build_sve_predicated_copy(_limit: usize) -> Vec<u32> {
+    let mut block = Vec::with_capacity(16);
+
+    // X0 = src, X1 = dst, X2 = limit (already set via args)
+    block.push(encode_mov_xzr(3)); // X3 = 0 (index)
+
+    // Initial predicate
+    block.push(encode_sve_whilelt_s(0, 3, 2));
+    
+    // If no lanes are active (limit=0), skip
+    block.push(0x5400_0080); // B.EQ (none) -> end (skip 5 insns)
+
+    // Loop start
+    // Instruction order:
+    // [0] LD1W
+    // [1] ST1W
+    // [2] ADD
+    // [3] WHILELT
+    // [4] B.NE -4 (back to [0])
+    let ld1w = encode_sve_ld1w_ss(0, 0, 0, 3);
+    let st1w = encode_sve_st1w_ss(0, 0, 1, 3);
+    let add_x3_16 = encode_add_x_imm(3, 3, 16);
+    let whilelt = encode_sve_whilelt_s(0, 3, 2);
+    let b_any = encode_b_ne(-4 * 4);
+
+    block.push(ld1w);
+    block.push(st1w);
+    block.push(add_x3_16);
+    block.push(whilelt);
+    block.push(b_any);
+
+    block
+}
+
+/// Build a JIT page for the predicated copy test (Gate 26).
+pub fn build_gate26_page(limit: usize) -> Option<crate::jit_page::JitPage> {
+    let mut insns = Vec::with_capacity(32);
+
+    // X0, X1 passed at call time. X2 = limit.
+    insns.push(encode_movz_x(2, limit as u16, 0));
+
+    insns.push(SMSTART);
+    insns.extend(build_sve_predicated_copy(limit));
+    insns.push(SMSTOP);
+    insns.push(RET);
+
+    let total_bytes = insns.len() * 4;
+    let page_size = ((total_bytes + 16383) / 16384) * 16384;
+
+    let page = crate::jit_page::JitPage::alloc(page_size).ok()?;
+    page.make_writable();
+
+    let mut off = 0;
+    for &op in &insns {
+        page.write_instruction(off, op);
+        off += 4;
+    }
+
+    page.make_executable();
+    Some(page)
+}
+
 /// Encode `LD1RW {Zt.S}, Pg/Z, [Xn, #imm]` — SVE load-and-replicate word.
 ///
 /// Loads a single 32-bit value from memory and broadcasts it to all S-element
@@ -1814,12 +1703,6 @@ mod tests {
     }
 
     #[test]
-    fn ldp_encoding() {
-        let enc = encode_ldp_x(0, 1, 28, 16);
-        assert_eq!(enc & 0xFFC0_0000, 0xA940_0000, "LDP base encoding");
-    }
-
-    #[test]
     fn movz_encoding() {
         let enc = encode_movz_x(5, 42, 0);
         assert_eq!(enc, 0xD280_0545, "MOVZ X5, #42");
@@ -1832,31 +1715,14 @@ mod tests {
     }
 
     #[test]
-    fn bfmopa_encoding() {
-        // BFMOPA ZA0.S, P0/M, P0/M, Z0.H, Z1.H
-        let enc = encode_bfmopa(0, 0, 0, 0, 1);
-        assert_eq!(enc, 0x8181_0000);
-    }
-
-    #[test]
-    fn smopa_encoding() {
-        // SMOPA ZA0.S, P0/M, P0/M, Z0.B, Z1.B
-        let enc = encode_smopa(0, 0, 0, 0, 1);
-        assert_eq!(enc, 0xA081_0000);
-    }
-
-    #[test]
-    fn umopa_encoding() {
-        // UMOPA ZA0.S, P0/M, P0/M, Z0.B, Z1.B
-        let enc = encode_umopa(0, 0, 0, 0, 1);
-        assert_eq!(enc, 0xA181_0000);
-    }
-
-    #[test]
-    fn sumopa_encoding() {
-        // SUMOPA ZA0.S, P0/M, P0/M, Z0.B, Z1.B
-        let enc = encode_sumopa(0, 0, 0, 0, 1);
-        assert_eq!(enc, 0xA0A1_0000);
+    fn whilelt_s_encoding() {
+        // Reference values from clang `aarch64-apple-darwin -march=armv9-a+sme`:
+        //   whilelt p0.s, x3, x2  → 0x25a2_1460
+        //   whilelt p0.s, xzr, x2 → 0x25a2_17e0  (xzr = reg 31 → 31<<5 = 0x3e0)
+        //   whilelt p0.s, x0, x1  → 0x25a1_1400
+        assert_eq!(encode_sve_whilelt_s(0, 3, 2),  0x25a2_1460);
+        assert_eq!(encode_sve_whilelt_s(0, 31, 2), 0x25a2_17e0);
+        assert_eq!(encode_sve_whilelt_s(0, 0, 1),  0x25a1_1400);
     }
 
     #[test]
